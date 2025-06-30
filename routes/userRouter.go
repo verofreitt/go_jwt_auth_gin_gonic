@@ -11,6 +11,6 @@ import (
 func UserRoutes(incomingRoutes *gin.Engine) {
 	// Define user-related routes here
 	incomingRoutes.Use(middleware.Authenticate())
-	incomingRoutes.GET("/users", controller.GetAllUsers())
+	incomingRoutes.GET("/users", controller.GetUsers())
 	incomingRoutes.GET("/users/:user_id", controller.GetUser())
 }

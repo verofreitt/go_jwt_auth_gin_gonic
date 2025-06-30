@@ -6,6 +6,7 @@ import (
 	"go_jwt_auth_gin_gonic/models"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	helper "go_jwt_auth_gin_gonic/helpers"
@@ -45,10 +46,12 @@ func VerifyPassword(userPassword, providedPassword string) (bool, string) {
 func Signup() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Second)
+		defer cancel()
 		var user models.User
 
 		if err := c.BindJSON(&user); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			cancel()
 			return
 		}
 
@@ -143,10 +146,78 @@ func Login() gin.HandlerFunc {
 	}
 }
 
-func GetUsers() {
-	// Implementation for getting user details
+func GetUsers() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if err := helper.CheckUserType(c, "ADMIN"); err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+			return
+		}
+		var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Second)
+		defer cancel()
+
+		recordPerPage, err := strconv.Atoi(c.Query("recordPerPage"))
+		if err != nil || recordPerPage < 1 {
+			recordPerPage = 10 // Default value if not provided or invalid
+		}
+		page, err := strconv.Atoi(c.Query("page"))
+		if err != nil || page < 1 {
+			page = 1 // Default value if not provided or invalid
+		}
+
+		startIndex := (page - 1) * recordPerPage
+		if param := c.Query("startIndex"); param != "" {
+			if idx, err := strconv.Atoi(param); err == nil {
+				startIndex = idx
+			}
+		}
+
+		matchStage := bson.D{{Key: "$match", Value: bson.D{{}}}}
+		groupStage := bson.D{{Key: "$group", Value: bson.D{
+			{Key: "_id", Value: bson.D{{Key: "_id", Value: "null"}}},
+			{Key: "total_count", Value: bson.D{{Key: "$sum", Value: 1}}},
+			{Key: "data", Value: bson.D{{Key: "$push", Value: "$$ROOT"}}}}}}
+
+		projectStage := bson.D{{Key: "$project", Value: bson.D{
+			{Key: "_id", Value: 0},
+			{Key: "total_count", Value: 1},
+			{Key: "user_items", Value: bson.D{{Key: "$slice", Value: []interface{}{"$data", startIndex, recordPerPage}}}}}}}
+
+		result, err := userCollection.Aggregate(ctx, mongo.Pipeline{
+			matchStage,
+			groupStage,
+			projectStage,
+		})
+		defer cancel()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "error occurred while listing users items"})
+		}
+
+		var allUsers []bson.M
+		if err = result.All(ctx, &allUsers); err != nil {
+			log.Fatal(err)
+		}
+
+		c.JSON(http.StatusOK, allUsers[0])
+	}
 }
 
-func GetUser() {
-	// Implementation for getting a specific user
+func GetUser() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userId := c.Param("user_id")
+
+		if err := helper.MatchUserTypeToUid(c, userId); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Second)
+
+		var user models.User
+		err := userCollection.FindOne(ctx, bson.M{"user_id": userId}).Decode(&user)
+		defer cancel()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, user)
+	}
 }
